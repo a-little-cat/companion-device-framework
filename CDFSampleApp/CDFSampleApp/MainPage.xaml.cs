@@ -117,7 +117,7 @@ namespace CDFSampleApp_Ashish
             if (registrationResult.Status != SecondaryAuthenticationFactorRegistrationStatus.Started)
             {
                 MessageDialog myDlg = null;
-                
+
                 if (registrationResult.Status == SecondaryAuthenticationFactorRegistrationStatus.DisabledByPolicy)
                 {
                     //For DisaledByPolicy Exception:Ensure secondary auth is enabled.

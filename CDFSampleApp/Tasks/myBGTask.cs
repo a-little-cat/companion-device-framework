@@ -13,6 +13,8 @@ using Windows.Security.Cryptography.Core;
 using Windows.Storage.Streams;
 using Windows.UI.Core;
 using Windows.UI.Notifications;
+using Windows.Devices.Bluetooth;
+using Windows.Devices.Enumeration;
 
 namespace Tasks
 {
@@ -52,13 +54,13 @@ namespace Tasks
 
             ShowToastNotification("Post Collecting Credential");
 
-            IReadOnlyList <SecondaryAuthenticationFactorInfo> deviceList = await SecondaryAuthenticationFactorRegistration.FindAllRegisteredDeviceInfoAsync(
+            IReadOnlyList<SecondaryAuthenticationFactorInfo> deviceList = await SecondaryAuthenticationFactorRegistration.FindAllRegisteredDeviceInfoAsync(
                     SecondaryAuthenticationFactorDeviceFindScope.AllUsers);
 
             if (deviceList.Count == 0)
             {
                 ShowToastNotification("Unexpected exception, device list = 0");
-                throw new Exception ("Unexpected exception, device list = 0");
+                throw new Exception("Unexpected exception, device list = 0");
             }
 
             ShowToastNotification("Found companion devices");
@@ -70,7 +72,7 @@ namespace Tasks
 
             //a nonce is an arbitrary number that may only be used once - a random or pseudo-random number issued in an authentication protocol to ensure that old communications cannot be reused in replay attacks.
             IBuffer svcNonce = CryptographicBuffer.GenerateRandom(32);  //Generate a nonce and do a HMAC operation with the nonce
-                                                 
+
 
             //In real world, you would need to take this nonce and send to companion device to perform an HMAC operation with it
             //You will have only 20 second to get the HMAC from the companion device
@@ -188,7 +190,7 @@ namespace Tasks
         // This code should be in background task
         async void OnStageChanged(Object sender, SecondaryAuthenticationFactorAuthenticationStageChangedEventArgs args)
         {
-            //ShowToastNotification("In StageChanged!" + args.StageInfo.Stage.ToString());
+            // ShowToastNotification("In StageChanged!" + args.StageInfo.Stage.ToString());
             if (args.StageInfo.Stage == SecondaryAuthenticationFactorAuthenticationStage.WaitingForUserConfirmation)
             {
                 ShowToastNotification("Stage = WaitingForUserConfirmation");
@@ -203,6 +205,7 @@ namespace Tasks
             {
                 ShowToastNotification("Stage = CollectingCredential");
 
+                await CheckDeivce();
                 PerformAuthentication();
             }
             else
@@ -216,5 +219,26 @@ namespace Tasks
                 SecondaryAuthenticationFactorAuthenticationStage stage = args.StageInfo.Stage;
             }
         }
+        async Task CheckDeivce()
+        {
+            while (true)
+            {
+                var allPairedDevices = await DeviceInformation.FindAllAsync(BluetoothDevice.GetDeviceSelectorFromPairingState(true));
+                ShowToastNotification(allPairedDevices.Count().ToString());
+                foreach (var device in allPairedDevices)
+                {
+                    var bluetoothDevice = await BluetoothDevice.FromIdAsync(device.Id);
+                    var connectionStatus = bluetoothDevice.ConnectionStatus.ToString();
+                    ShowToastNotification(device.Name);
+                    if (device.Name == "那只猫的se" && connectionStatus == "Connected")
+                    {
+                        ShowToastNotification("found se");
+                        return;
+                    }
+                }
+                await Task.Delay(TimeSpan.FromSeconds(1));
+            }
+        }
+
     }
 }
