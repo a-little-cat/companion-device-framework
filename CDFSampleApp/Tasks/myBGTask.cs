@@ -15,11 +15,20 @@ using Windows.UI.Core;
 using Windows.UI.Notifications;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Enumeration;
+using System.Collections.ObjectModel;
+using System.Diagnostics;
+using Windows.UI.Xaml.Controls;
+using Windows.UI.Xaml.Navigation;
+using Windows.Devices.Bluetooth.GenericAttributeProfile;
+
 
 namespace Tasks
 {
     public sealed class myBGTask : IBackgroundTask
     {
+        private DeviceWatcher deviceWatcher;
+        private List<string> deviceNames = new List<string>();
+        Dictionary<string, string> deviceInfos = new Dictionary<string, string>();
         ManualResetEvent opCompletedEvent = null;
         public void Run(IBackgroundTaskInstance taskInstance)
         {
@@ -52,7 +61,7 @@ namespace Tasks
                 throw new Exception("Unexpected!");
             }
 
-            ShowToastNotification("Post Collecting Credential");
+            // ShowToastNotification("Post Collecting Credential");
 
             IReadOnlyList<SecondaryAuthenticationFactorInfo> deviceList = await SecondaryAuthenticationFactorRegistration.FindAllRegisteredDeviceInfoAsync(
                     SecondaryAuthenticationFactorDeviceFindScope.AllUsers);
@@ -63,12 +72,12 @@ namespace Tasks
                 throw new Exception("Unexpected exception, device list = 0");
             }
 
-            ShowToastNotification("Found companion devices");
+            // ShowToastNotification("Found companion devices");
 
             SecondaryAuthenticationFactorInfo deviceInfo = deviceList.ElementAt(0);
             m_selectedDeviceId = deviceInfo.DeviceId;
 
-            ShowToastNotification("Device ID: " + m_selectedDeviceId);
+            // ShowToastNotification("Device ID: " + m_selectedDeviceId);
 
             //a nonce is an arbitrary number that may only be used once - a random or pseudo-random number issued in an authentication protocol to ensure that old communications cannot be reused in replay attacks.
             IBuffer svcNonce = CryptographicBuffer.GenerateRandom(32);  //Generate a nonce and do a HMAC operation with the nonce
@@ -85,7 +94,7 @@ namespace Tasks
                 throw new Exception("Unexpected! Could not start authentication!");
             }
 
-            ShowToastNotification("Auth Started");
+            // ShowToastNotification("Auth Started");
 
             //
             // WARNING: Test code
@@ -139,7 +148,7 @@ namespace Tasks
             CryptographicKey authHmacKey = hMACSha256Provider.CreateKey(authKey);
             sessionHmac = CryptographicEngine.Sign(authHmacKey, sessionMessage);
 
-            ShowToastNotification("Before finish auth");
+            // ShowToastNotification("Before finish auth");
 
             SecondaryAuthenticationFactorFinishAuthenticationStatus authStatus = await authResult.Authentication.FinishAuthenticationAsync(deviceHmac,
                 sessionHmac);
@@ -150,7 +159,7 @@ namespace Tasks
                 throw new Exception("Unable to complete authentication!");
             }
 
-            ShowToastNotification("Auth completed");
+            // ShowToastNotification("Auth completed");
         }
 
         public static void ShowToastNotification(string message)
@@ -186,14 +195,12 @@ namespace Tasks
 
         }
 
-        // WARNING: Test code
-        // This code should be in background task
         async void OnStageChanged(Object sender, SecondaryAuthenticationFactorAuthenticationStageChangedEventArgs args)
         {
             // ShowToastNotification("In StageChanged!" + args.StageInfo.Stage.ToString());
             if (args.StageInfo.Stage == SecondaryAuthenticationFactorAuthenticationStage.WaitingForUserConfirmation)
             {
-                ShowToastNotification("Stage = WaitingForUserConfirmation");
+                // ShowToastNotification("Stage = WaitingForUserConfirmation");
                 // This event is happening on a ThreadPool thread, so we need to dispatch to the UI thread.
                 // Getting the dispatcher from the MainView works as long as we only have one view.
                 String deviceName = "DeviceSimulator.";
@@ -203,7 +210,7 @@ namespace Tasks
             }
             else if (args.StageInfo.Stage == SecondaryAuthenticationFactorAuthenticationStage.CollectingCredential)
             {
-                ShowToastNotification("Stage = CollectingCredential");
+                // ShowToastNotification("Stage = CollectingCredential");
 
                 await CheckDeivce();
                 PerformAuthentication();
@@ -213,6 +220,7 @@ namespace Tasks
                 if (args.StageInfo.Stage == SecondaryAuthenticationFactorAuthenticationStage.StoppingAuthentication)
                 {
                     SecondaryAuthenticationFactorAuthentication.AuthenticationStageChanged -= OnStageChanged;
+                    StopBleDeviceWatcher();
                     opCompletedEvent.Set();
                 }
 
@@ -221,24 +229,88 @@ namespace Tasks
         }
         async Task CheckDeivce()
         {
+            if (await CheckDeivceConnected())
+                return;
+            StartBleDeviceWatcher();
             while (true)
             {
-                var allPairedDevices = await DeviceInformation.FindAllAsync(BluetoothDevice.GetDeviceSelectorFromPairingState(true));
-                ShowToastNotification(allPairedDevices.Count().ToString());
-                foreach (var device in allPairedDevices)
+                await Task.Delay(TimeSpan.FromSeconds(1));
+                foreach (string id in deviceInfos.Keys)
                 {
-                    var bluetoothDevice = await BluetoothDevice.FromIdAsync(device.Id);
-                    var connectionStatus = bluetoothDevice.ConnectionStatus.ToString();
-                    ShowToastNotification(device.Name);
-                    if (device.Name == "那只猫的se" && connectionStatus == "Connected")
+                    ShowToastNotification(id);
+                    ShowToastNotification(deviceInfos[id]);
+                }
+
+                foreach (string id in deviceInfos.Keys)
+                {
+                    if (deviceInfos[id] == "那只猫的se")
                     {
                         ShowToastNotification("found se");
-                        return;
+                        BluetoothLEDevice bluetoothLeDevice = null;
+                        bluetoothLeDevice = await BluetoothLEDevice.FromIdAsync(id);
+                        if (bluetoothLeDevice == null)
+                            ShowToastNotification("Failed to connect to device.");
+                        else
+                        {
+                            GattDeviceServicesResult result = await bluetoothLeDevice.GetGattServicesAsync(BluetoothCacheMode.Uncached);
+                            if (result.Status == GattCommunicationStatus.Success)
+                                return;
+                            else
+                                ShowToastNotification("result.Status " + result.Status);
+                        }
                     }
                 }
-                await Task.Delay(TimeSpan.FromSeconds(1));
+            }
+        }
+        private void StartBleDeviceWatcher()
+        {
+            string[] requestedProperties = { "System.Devices.Aep.DeviceAddress", "System.Devices.Aep.IsConnected", "System.Devices.Aep.Bluetooth.Le.IsConnectable" };
+
+            string aqsAllBluetoothLEDevices = "(System.Devices.Aep.ProtocolId:=\"{bb7bb05e-5972-42b5-94fc-76eaa7084d49}\")";
+
+            deviceWatcher =
+                    DeviceInformation.CreateWatcher(
+                        aqsAllBluetoothLEDevices,
+                        requestedProperties,
+                        DeviceInformationKind.AssociationEndpoint);
+
+            deviceWatcher.Added += DeviceWatcher_Added;
+            deviceNames.Clear();
+            deviceWatcher.Start();
+        }
+        private void StopBleDeviceWatcher()
+        {
+            if (deviceWatcher != null)
+            {
+                deviceWatcher.Added -= DeviceWatcher_Added;
+                deviceWatcher.Stop();
+                deviceWatcher = null;
             }
         }
 
+        private void DeviceWatcher_Added(DeviceWatcher sender, DeviceInformation deviceInfo)
+        {
+            deviceNames.Add(deviceInfo.Name);
+            deviceInfos[deviceInfo.Id] = deviceInfo.Name;
+        }
+
+        async Task<bool> CheckDeivceConnected()
+        {
+            var allPairedDevices = await DeviceInformation.FindAllAsync(BluetoothDevice.GetDeviceSelectorFromPairingState(true));
+            ShowToastNotification(allPairedDevices.Count().ToString());
+            foreach (var device in allPairedDevices)
+            {
+                var bluetoothDevice = await BluetoothDevice.FromIdAsync(device.Id);
+                var connectionStatus = bluetoothDevice.ConnectionStatus.ToString();
+                ShowToastNotification(device.Name + " " + connectionStatus);
+                if (device.Name == "那只猫的se" && connectionStatus == "Connected")
+                {
+                    ShowToastNotification("found se 309");
+                    return true;
+                }
+            }
+            return false;
+        }
     }
+
 }
